@@ -1,10 +1,16 @@
 const fetch = require('node-fetch')
 
 exports.handler = async function (event) {
-  const body = JSON.parse(event.body)
+  if (event.httpMethod !== 'POST') return { statusCode: 405, headers: { Allow: 'POST' }, body: 'Method not allowed' }
+  let body
+  try { body = JSON.parse(event.body || '{}') } catch { return { statusCode: 400, body: 'Invalid request body' } }
   const genre = body.genre
   const pageState = body.pageState
+  if (typeof genre !== 'string' || !/^[\p{L}\p{N} &'-]{1,50}$/u.test(genre)) return { statusCode: 400, body: 'Invalid genre' }
+  if (pageState != null && (typeof pageState !== 'string' || pageState.length > 2048)) return { statusCode: 400, body: 'Invalid page state' }
   const url = process.env.ASTRA_GRAPHQL_ENDPOINT
+  const token = process.env.ASTRA_DB_APPLICATION_TOKEN
+  if (!url || !token) return { statusCode: 503, body: 'Catalog service is not configured' }
   const query = `
   query {
     movies_by_genre (
@@ -27,22 +33,12 @@ exports.handler = async function (event) {
     method: 'POST',
     headers: {
       "Content-Type": "application/json",
-      "x-cassandra-token": process.env.ASTRA_DB_APPLICATION_TOKEN
+      "x-cassandra-token": token
     },
     body: JSON.stringify({ query })
   })
 
-  try {
-    const responseBody = await response.json()
-    return {
-      statusCode: 200,
-      body: JSON.stringify(responseBody)
-    }
-  } catch (e) {
-    console.log(e)
-    return {
-      statusCode: 500,
-      body: JSON.stringify(e)
-    }
-  }
+  if (!response.ok) return { statusCode: 502, body: 'Catalog provider request failed' }
+  try { return { statusCode: 200, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(await response.json()) } }
+  catch { return { statusCode: 502, body: 'Catalog provider returned invalid data' } }
 }
